@@ -6,9 +6,6 @@ All heavy lifting (pandas, sklearn) lives in data_logic.py -- this file
 only handles page layout, user inputs, and displaying results.
 """
 
-import matplotlib
-matplotlib.use("Agg")
-
 import numpy as np
 import pandas as pd
 import plotly.express as px
