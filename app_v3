@@ -369,7 +369,10 @@ def render_game():
             filled = lineup_slots.get(i)
             label = _slot_label(position, i)
             if filled is not None:
-                st.success(f"{label}: {filled['Name']} ({filled['Team']}, {filled['Season']})")
+                name = filled.get("Name")
+                team = filled.get("Team")
+                season = filled.get("Season")
+                st.success(f"{label}: {name} ({team}, {season})")
             elif i == slot_index:
                 st.info(f"{label}: -- on the clock --")
             else:
@@ -420,12 +423,13 @@ def render_game():
     for i in range(len(deal)):
         candidate = deal.iloc[i]
         with deal_cols[i]:
-            st.markdown(f"**{candidate['Name']}**")
+            candidate_name = candidate["Name"]
+            st.markdown(f"**{candidate_name}**")
             st.write(f"Team: {candidate['Team']}")
             st.write(f"Season: {candidate['Season']}")
             st.write(f"Age: {candidate['Age']}")
             st.write(f"Position: {candidate['PrimaryPosition']}")
-            if st.button(f"Draft {candidate['Name']}", key=f"draft_{slot_index}_{i}"):
+            if st.button(f"Draft {candidate_name}", key=f"draft_{slot_index}_{i}"):
                 lineup_slots[slot_index] = candidate.to_dict()
                 st.session_state["lineup_slots"] = lineup_slots
                 st.session_state["current_slot_index"] = slot_index + 1
