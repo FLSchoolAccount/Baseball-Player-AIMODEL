@@ -1,0 +1,479 @@
+import random
+
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
+
+import data_logic as dl
+
+st.set_page_config(page_title="Baseball Player Ratings", layout="wide")
+
+YEARS = list(range(1990, 2025))
+
+if "page" not in st.session_state:
+    st.session_state["page"] = "home"
+
+
+def go_to(page_name):
+    st.session_state["page"] = page_name
+
+
+def back_home_button():
+    st.button("Back to Home", on_click=go_to, args=("home",), key=f"back_home_{st.session_state['page']}")
+
+
+# ============================================================
+# HOME PAGE
+# ============================================================
+
+def render_home():
+    st.title("Baseball Player Ratings & Projections")
+    st.caption(
+        "Random-forest models trained on Lahman batting/pitching/salary data. "
+        "Pick a tool below to get started."
+    )
+
+    col1, col2 = st.columns(2)
+    col3, col4 = st.columns(2)
+    col5, _ = st.columns(2)
+
+    with col1:
+        st.subheader("Pitcher Ratings")
+        st.write("Predict OVR and Potential for pitchers in any season.")
+        st.button("Open Pitcher Ratings", key="open_pitchers", on_click=go_to, args=("pitchers",))
+
+    with col2:
+        st.subheader("Hitter Ratings")
+        st.write("Predict OVR, Projected OVR, and Potential for a team's hitters.")
+        st.button("Open Hitter Ratings", key="open_hitters", on_click=go_to, args=("hitters",))
+
+    with col3:
+        st.subheader("Pitcher Salary & Contracts")
+        st.write("Predict next-season salary and contract length for pitchers.")
+        st.button("Open Salary & Contracts", key="open_salary", on_click=go_to, args=("salary",))
+
+    with col4:
+        st.subheader("Player OVR History")
+        st.write("Look up a hitter's Formula OVR across seasons.")
+        st.button("Open Player History", key="open_history", on_click=go_to, args=("history",))
+
+    with col5:
+        st.subheader("Build Your Lineup (Minigame)")
+        st.write("Blind-draft a 9-man lineup by position, then see your simulated 162-game record.")
+        st.button("Play Build Your Lineup", key="open_game", on_click=go_to, args=("game",), type="primary")
+
+
+# ============================================================
+# PITCHER RATINGS PAGE
+# ============================================================
+
+def render_pitchers():
+    back_home_button()
+    st.header("Pitcher OVR & Potential")
+    st.write(
+        "Trains a random forest on the surrounding 20 seasons of pitcher stats, "
+        "then predicts this year's OVR and each pitcher's Potential (max OVR over the next 3 years)."
+    )
+
+    pitcher_year = st.selectbox("Year", YEARS, index=len(YEARS) - 1, key="pitcher_year")
+
+    if st.button("Build Pitcher Ratings", type="primary", key="build_pitchers"):
+        with st.spinner(f"Training models and building {pitcher_year} pitcher ratings..."):
+            try:
+                pitcher_df = dl.build_pitcher_ratings(pitcher_year)
+                st.session_state["pitcher_df"] = pitcher_df
+                st.session_state["pitcher_df_year"] = pitcher_year
+            except Exception as error:
+                st.error(f"Could not build pitcher ratings for {pitcher_year}: {error}")
+                st.session_state.pop("pitcher_df", None)
+
+    if "pitcher_df" in st.session_state:
+        pdf = st.session_state["pitcher_df"]
+        py = st.session_state["pitcher_df_year"]
+
+        st.success(f"Built {len(pdf):,} pitcher ratings for {py}.")
+        st.dataframe(pdf, use_container_width=True, height=420)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            fig = px.histogram(pdf, x="OVR", nbins=30, title=f"{py} Pitcher OVR Distribution")
+            st.plotly_chart(fig, use_container_width=True)
+        with col2:
+            fig = px.histogram(pdf, x="Potential", nbins=30, title=f"{py} Pitcher Potential Distribution")
+            st.plotly_chart(fig, use_container_width=True)
+
+        csv_bytes = pdf.to_csv(index=False).encode("utf-8")
+        st.download_button("Download pitcher ratings as CSV", csv_bytes, f"pitcher_ratings_{py}.csv", "text/csv")
+
+
+# ============================================================
+# HITTER RATINGS PAGE
+# ============================================================
+
+def render_hitters():
+    back_home_button()
+    st.header("Hitter OVR, Projected OVR & Potential")
+    st.write(
+        "Pick a year, then a team, to build ratings for qualified hitters "
+        "(non-pitchers with more than 70 games played)."
+    )
+
+    hitter_year = st.selectbox("Year", YEARS, index=len(YEARS) - 1, key="hitter_year")
+
+    team_options = ["All teams"]
+    try:
+        year_df = dl.hittingStats(hitter_year)
+        if not year_df.empty and "Team" in year_df.columns:
+            teams = (
+                year_df["Team"].dropna().astype(str).str.strip()
+                .str.split("/").explode().str.strip()
+            )
+            teams = sorted(teams[teams != ""].unique().tolist())
+            team_options = ["All teams"] + teams
+    except Exception:
+        pass
+
+    hitter_team = st.selectbox("Team", team_options, key="hitter_team")
+
+    if st.button("Build Hitter Ratings", type="primary", key="build_hitters"):
+        selected_team = None if hitter_team == "All teams" else hitter_team
+        with st.spinner(f"Training models and building {hitter_year} hitter ratings..."):
+            try:
+                hitter_df = dl.build_hitter_ratings(hitter_year, selected_team=selected_team)
+                st.session_state["hitter_df"] = hitter_df
+                st.session_state["hitter_df_year"] = hitter_year
+                st.session_state["hitter_df_team"] = hitter_team
+            except Exception as error:
+                st.error(f"Could not build hitter ratings: {error}")
+                st.session_state.pop("hitter_df", None)
+
+    if "hitter_df" in st.session_state:
+        hdf = st.session_state["hitter_df"]
+        hy = st.session_state["hitter_df_year"]
+        ht = st.session_state["hitter_df_team"]
+
+        st.success(f"Built {len(hdf):,} hitter ratings for {ht} in {hy}.")
+        st.dataframe(hdf, use_container_width=True, height=420)
+
+        if "OPS" in hdf.columns and "OVR" in hdf.columns:
+            fig = px.scatter(
+                hdf, x="OPS", y="OVR", hover_data=["Name", "Team"],
+                title=f"{hy} {ht} Hitters: OVR vs OPS",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        csv_bytes = hdf.to_csv(index=False).encode("utf-8")
+        st.download_button("Download hitter ratings as CSV", csv_bytes, f"hitter_ratings_{hy}_{ht}.csv", "text/csv")
+
+
+# ============================================================
+# SALARY & CONTRACTS PAGE
+# ============================================================
+
+def render_salary():
+    back_home_button()
+    st.header("Pitcher Salary & Contract-Length Projections")
+    st.write(
+        "First builds pitcher OVR/Potential ratings for the selected year, "
+        "then trains a separate random forest on historical salary data to "
+        "predict next-season salary and projected contract length."
+    )
+
+    salary_year = st.selectbox("Year", YEARS, index=len(YEARS) - 1, key="salary_year")
+
+    if st.button("Build Salary Table", type="primary", key="build_salary"):
+        with st.spinner(f"Building {salary_year} pitcher ratings and salary projections..."):
+            try:
+                pitcher_ratings = dl.build_pitcher_ratings(salary_year)
+                pitcher_ratings = pitcher_ratings.rename(columns={"OVR": "Predicted_OVR"})
+
+                current_stats = dl.add_formula_ovr(dl.pitchingStats(salary_year))
+                merge_cols = [c for c in current_stats.columns if c not in pitcher_ratings.columns] + ["playerID"]
+                pitcher_ratings_full = pitcher_ratings.merge(
+                    current_stats[merge_cols], left_on="Name", right_on="Name", how="left"
+                ) if "playerID" not in pitcher_ratings.columns else pitcher_ratings
+
+                salary_df, _ = dl.build_salary_table(pitcher_ratings_full, salary_year)
+                st.session_state["salary_df"] = salary_df
+                st.session_state["salary_df_year"] = salary_year
+            except Exception as error:
+                st.error(f"Could not build salary table for {salary_year}: {error}")
+                st.session_state.pop("salary_df", None)
+
+    if "salary_df" in st.session_state:
+        sdf = st.session_state["salary_df"]
+        sy = st.session_state["salary_df_year"]
+
+        st.success(f"Built {len(sdf):,} salary and contract-length projections for {sy}.")
+        st.dataframe(sdf, use_container_width=True, height=420)
+
+        csv_bytes = sdf.to_csv(index=False).encode("utf-8")
+        st.download_button("Download salary projections as CSV", csv_bytes, f"pitcher_salary_{sy}.csv", "text/csv")
+
+
+# ============================================================
+# PLAYER OVR HISTORY PAGE
+# ============================================================
+
+def render_history():
+    back_home_button()
+    st.header("Player OVR History")
+    st.write("Look up a hitter's Formula OVR across seasons.")
+
+    history_year = st.selectbox("Season to search up to", YEARS, index=len(YEARS) - 1, key="history_year")
+    player_search = st.text_input("Player name contains", key="player_search", placeholder="e.g. Judge")
+
+    if player_search:
+        try:
+            season_df = dl.hittingStats(history_year)
+            matches = season_df[season_df["Name"].str.contains(player_search, case=False, na=False)]
+            if matches.empty:
+                st.info("No players matched that name for this season.")
+            else:
+                player_options = dict(zip(matches["Name"], matches["playerID"]))
+                chosen_name = st.selectbox("Select player", list(player_options.keys()))
+
+                if st.button("Show OVR History", type="primary", key="show_history"):
+                    player_id = player_options[chosen_name]
+                    history_df = dl.get_player_ovr_history(player_id, start_year=1990, final_year=history_year)
+
+                    if history_df.empty:
+                        st.warning(f"No historical OVR data found for {chosen_name}.")
+                    else:
+                        st.dataframe(history_df, use_container_width=True)
+
+                        fig = go.Figure()
+                        fig.add_trace(go.Scatter(
+                            x=history_df["Season"], y=history_df["Formula_OVR"],
+                            mode="lines+markers", name="Formula OVR",
+                        ))
+                        fig.update_layout(
+                            title=f"{chosen_name} OVR Progression",
+                            xaxis_title="Season", yaxis_title="OVR", yaxis_range=[69, 100],
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+        except Exception as error:
+            st.error(f"Could not search players: {error}")
+
+
+# ============================================================
+# MINIGAME: BUILD YOUR LINEUP (blind draft by position)
+# ============================================================
+
+POSITION_SLOTS = ["C", "1B", "2B", "3B", "SS", "OF", "OF", "OF", "DH"]
+
+
+def _slot_label(slot, index):
+    return f"{index + 1}. {slot}"
+
+
+def _position_pool(position):
+    """Pool candidate hitters for a given position across ALL years (1990-2024)."""
+    if position not in st.session_state.get("_position_pool_cache", {}):
+        frames = []
+        for year in YEARS:
+            try:
+                season_df = dl.hittingStats(year)
+            except Exception:
+                continue
+            if season_df.empty or "PrimaryPosition" not in season_df.columns:
+                continue
+
+            pos_series = season_df["PrimaryPosition"].astype(str).str.upper().str.strip()
+
+            if position == "OF":
+                mask = pos_series.isin(["OF", "LF", "CF", "RF"])
+            elif position == "DH":
+                mask = pos_series.isin(["DH"])
+            else:
+                mask = pos_series == position
+
+            matched = season_df.loc[mask].copy()
+            if matched.empty:
+                continue
+
+            matched["Season"] = year
+            frames.append(matched)
+
+        cache = st.session_state.setdefault("_position_pool_cache", {})
+        cache[position] = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        st.session_state["_position_pool_cache"] = cache
+
+    return st.session_state["_position_pool_cache"][position]
+
+
+def _deal_three(position):
+    pool = _position_pool(position)
+    if pool.empty or len(pool) < 3:
+        return None
+    return pool.sample(n=3, random_state=random.randint(0, 999999)).reset_index(drop=True)
+
+
+def _grade_and_wins(avg_ovr, low=72, high=95, mid=83.5, k=6):
+    if avg_ovr <= low:
+        return 0, 162
+    if avg_ovr >= high:
+        return 162, 0
+    x = (avg_ovr - low) / (high - low)
+    x0 = (mid - low) / (high - low)
+    s = 1 / (1 + np.exp(-k * (x - x0)))
+    s0 = 1 / (1 + np.exp(-k * (0 - x0)))
+    s1 = 1 / (1 + np.exp(-k * (1 - x0)))
+    s_norm = (s - s0) / (s1 - s0)
+    wins = int(round(s_norm * 162))
+    return wins, 162 - wins
+
+
+def _grade_label(wins):
+    if wins >= 100:
+        return "World Series Contender", "\U0001F3C6"
+    elif wins >= 90:
+        return "Playoff Team", "\u2B50"
+    elif wins >= 81:
+        return "Middle of the Pack", "\u26BE"
+    elif wins >= 65:
+        return "Rebuilding", "\U0001F527"
+    else:
+        return "Bottom Feeder", "\U0001FAAB"
+
+
+def _reset_game():
+    st.session_state["lineup_slots"] = {i: None for i in range(9)}
+    st.session_state["current_slot_index"] = 0
+    st.session_state["current_deal"] = None
+    st.session_state["just_drafted"] = False
+
+
+def render_game():
+    back_home_button()
+    st.header("Build Your Lineup")
+    st.write(
+        "Each round, you're dealt 3 random hitters (pooled from every season 1990-2024) "
+        "who play the position you still need. You'll see their stats, but not their OVR -- "
+        "figure out who's best yourself. Fill all 9 spots, then see your team's simulated 162-game record."
+    )
+
+    if "lineup_slots" not in st.session_state:
+        _reset_game()
+
+    if st.button("Start Over", key="restart_game"):
+        _reset_game()
+        st.rerun()
+
+    lineup_slots = st.session_state["lineup_slots"]
+    slot_index = st.session_state["current_slot_index"]
+
+    st.subheader("Your Lineup So Far")
+    cols = st.columns(3)
+    for i, position in enumerate(POSITION_SLOTS):
+        with cols[i % 3]:
+            filled = lineup_slots.get(i)
+            label = _slot_label(position, i)
+            if filled is not None:
+                name = filled.get("Name")
+                team = filled.get("Team")
+                season = filled.get("Season")
+                st.success(f"{label}: {name} ({team}, {season})")
+            elif i == slot_index:
+                st.info(f"{label}: -- on the clock --")
+            else:
+                st.write(f"{label}: empty")
+
+    if slot_index >= 9:
+        st.success("Lineup complete! Here are your final ratings:")
+
+        picked_rows = []
+        for i, position in enumerate(POSITION_SLOTS):
+            row = lineup_slots[i].copy()
+            rated = dl.add_hitter_formula_ovr(pd.DataFrame([row]))
+            row["Formula_OVR"] = rated.iloc[0]["Formula_OVR"]
+            row["Slot"] = _slot_label(position, i)
+            picked_rows.append(row)
+
+        picked_df = pd.DataFrame(picked_rows)
+        display_cols = ["Slot", "Name", "Team", "Season", "Age", "HR", "BA", "OBP", "SLG", "OPS", "Formula_OVR"]
+        display_cols = [c for c in display_cols if c in picked_df.columns]
+        st.dataframe(picked_df[display_cols].rename(columns={"Formula_OVR": "OVR"}), use_container_width=True)
+
+        avg_ovr = picked_df["Formula_OVR"].mean()
+        wins, losses = _grade_and_wins(avg_ovr)
+        grade, emoji = _grade_label(wins)
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Average OVR", f"{avg_ovr:.1f}")
+        m2.metric("Simulated Record", f"{wins}-{losses}")
+        m3.metric("Team Grade", f"{emoji} {grade}")
+
+        csv_bytes = picked_df[display_cols].to_csv(index=False).encode("utf-8")
+        st.download_button("Download your lineup as CSV", csv_bytes, "my_lineup.csv", "text/csv")
+        return
+
+    current_position = POSITION_SLOTS[slot_index]
+    st.subheader(f"Round {slot_index + 1}/9: Pick your {current_position}")
+
+    if st.session_state["current_deal"] is None:
+        with st.spinner(f"Dealing {current_position} candidates..."):
+            try:
+                deal = _deal_three(current_position)
+            except Exception as error:
+                st.error(f"Error building the player pool for {current_position}: {type(error).__name__}: {error}")
+                return
+        if deal is None:
+            st.error(f"Not enough historical {current_position} data to deal a round (need at least 3 matching players). Try Start Over.")
+            return
+        st.session_state["current_deal"] = deal
+
+    deal = st.session_state["current_deal"]
+
+    if deal is None or deal.empty:
+        st.error("No players were dealt this round. Click Start Over to retry.")
+        return
+
+    if st.session_state.get("just_drafted"):
+        st.balloons()
+        st.session_state["just_drafted"] = False
+
+    deal_cols = st.columns(3)
+    for i in range(len(deal)):
+        candidate = deal.iloc[i]
+        with deal_cols[i]:
+            try:
+                candidate_name = candidate["Name"]
+                with st.container(border=True):
+                    st.markdown(f"### {candidate_name}")
+                    st.write(f"**Team:** {candidate.get('Team', 'N/A')}")
+                    st.write(f"**Season:** {candidate.get('Season', 'N/A')}")
+                    st.write(f"**Age:** {candidate.get('Age', 'N/A')}")
+                    st.divider()
+                    st.write(f"**HR:** {candidate.get('HR', 'N/A')}")
+                    st.write(f"**BA:** {candidate.get('BA', 'N/A')}")
+                    st.write(f"**OBP:** {candidate.get('OBP', 'N/A')}")
+                    st.write(f"**SLG:** {candidate.get('SLG', 'N/A')}")
+                    st.write(f"**OPS:** {candidate.get('OPS', 'N/A')}")
+                    if st.button(f"Draft {candidate_name}", key=f"draft_{slot_index}_{i}", type="primary"):
+                        lineup_slots[slot_index] = candidate.to_dict()
+                        st.session_state["lineup_slots"] = lineup_slots
+                        st.session_state["current_slot_index"] = slot_index + 1
+                        st.session_state["current_deal"] = None
+                        st.session_state["just_drafted"] = True
+                        st.rerun()
+            except Exception as error:
+                st.error(f"Could not render candidate {i}: {type(error).__name__}: {error}")
+
+
+# ============================================================
+# ROUTER
+# ============================================================
+
+PAGES = {
+    "home": render_home,
+    "pitchers": render_pitchers,
+    "hitters": render_hitters,
+    "salary": render_salary,
+    "history": render_history,
+    "game": render_game,
+}
+
+PAGES.get(st.session_state["page"], render_home)()
