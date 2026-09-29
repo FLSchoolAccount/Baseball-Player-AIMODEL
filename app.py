@@ -291,12 +291,14 @@ def _position_pool(position):
             if season_df.empty or "PrimaryPosition" not in season_df.columns:
                 continue
 
+            pos_series = season_df["PrimaryPosition"].astype(str).str.upper().str.strip()
+
             if position == "OF":
-                mask = season_df["PrimaryPosition"].astype(str).str.upper().isin(["OF", "LF", "CF", "RF"])
+                mask = pos_series.isin(["OF", "LF", "CF", "RF"])
             elif position == "DH":
-                mask = season_df["PrimaryPosition"].astype(str).str.upper().isin(["DH"])
+                mask = pos_series.isin(["DH"])
             else:
-                mask = season_df["PrimaryPosition"].astype(str).str.upper() == position
+                mask = pos_series == position
 
             matched = season_df.loc[mask].copy()
             if matched.empty:
@@ -421,30 +423,44 @@ def render_game():
     st.subheader(f"Round {slot_index + 1}/9: Pick your {current_position}")
 
     if st.session_state["current_deal"] is None:
-        deal = _deal_three(current_position)
+        with st.spinner(f"Dealing {current_position} candidates..."):
+            try:
+                deal = _deal_three(current_position)
+            except Exception as error:
+                st.error(f"Error building the player pool for {current_position}: {type(error).__name__}: {error}")
+                return
         if deal is None:
-            st.error(f"Not enough historical {current_position} data to deal a round. Try Start Over.")
+            st.error(f"Not enough historical {current_position} data to deal a round (need at least 3 matching players). Try Start Over.")
             return
         st.session_state["current_deal"] = deal
 
     deal = st.session_state["current_deal"]
 
+    if deal is None or deal.empty:
+        st.error("No players were dealt this round. Click Start Over to retry.")
+        return
+
+    st.caption(f"Debug: dealt {len(deal)} candidates for {current_position}")
+
     deal_cols = st.columns(3)
     for i in range(len(deal)):
         candidate = deal.iloc[i]
         with deal_cols[i]:
-            candidate_name = candidate["Name"]
-            st.markdown(f"**{candidate_name}**")
-            st.write(f"Team: {candidate['Team']}")
-            st.write(f"Season: {candidate['Season']}")
-            st.write(f"Age: {candidate['Age']}")
-            st.write(f"Position: {candidate['PrimaryPosition']}")
-            if st.button(f"Draft {candidate_name}", key=f"draft_{slot_index}_{i}"):
-                lineup_slots[slot_index] = candidate.to_dict()
-                st.session_state["lineup_slots"] = lineup_slots
-                st.session_state["current_slot_index"] = slot_index + 1
-                st.session_state["current_deal"] = None
-                st.rerun()
+            try:
+                candidate_name = candidate["Name"]
+                st.markdown(f"**{candidate_name}**")
+                st.write(f"Team: {candidate.get('Team', 'N/A')}")
+                st.write(f"Season: {candidate.get('Season', 'N/A')}")
+                st.write(f"Age: {candidate.get('Age', 'N/A')}")
+                st.write(f"Position: {candidate.get('PrimaryPosition', 'N/A')}")
+                if st.button(f"Draft {candidate_name}", key=f"draft_{slot_index}_{i}"):
+                    lineup_slots[slot_index] = candidate.to_dict()
+                    st.session_state["lineup_slots"] = lineup_slots
+                    st.session_state["current_slot_index"] = slot_index + 1
+                    st.session_state["current_deal"] = None
+                    st.rerun()
+            except Exception as error:
+                st.error(f"Could not render candidate {i}: {type(error).__name__}: {error}")
 
 
 # ============================================================
