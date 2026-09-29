@@ -8,7 +8,7 @@ import streamlit as st
 
 import data_logic as dl
 
-st.set_page_config(page_title="Baseball Player Ratings: Hi yeelin!!!!!", layout="wide")
+st.set_page_config(page_title="Baseball Player Ratings", layout="wide")
 
 YEARS = list(range(1990, 2025))
 
