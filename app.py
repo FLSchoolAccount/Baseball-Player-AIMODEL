@@ -39,11 +39,34 @@ def back_home_button():
 # ============================================================
 
 def render_home():
+    top_left, top_right = st.columns([8, 1])
+    with top_right:
+        if st.button("About", key="about_button_home", help="About this project"):
+            st.session_state["show_about"] = not st.session_state.get("show_about", False)
+
     st.title("Baseball Player Ratings & Projections")
     st.caption(
         "Random-forest models trained on Lahman batting/pitching/salary data. "
         "Pick a tool below to get started."
     )
+
+    if st.session_state.get("show_about", False):
+        with st.expander("About This Project", expanded=True):
+            st.write(
+                "Hi, I'm FL -- a high school student with a passion for baseball, data, and "
+                "building things. This project started as a way to combine two things I love: "
+                "baseball statistics and machine learning. I wanted to see if I could take decades "
+                "of real MLB data and use it to predict player ratings, project future performance, "
+                "and estimate salaries -- the kind of thing you'd see in a sports video game, but "
+                "built from scratch with real historical data and my own rating formulas."
+            )
+            st.write(
+                "I built the models using Python, pandas, and scikit-learn (random forest "
+                "regression), starting in Google Colab before turning it into this interactive "
+                "website with Streamlit. Along the way I also added a lineup-drafting minigame "
+                "because stats are more fun when you can actually play with them."
+            )
+            st.write("Thanks for checking out the site!")
 
     col1, col2 = st.columns(2)
     col3, col4 = st.columns(2)
@@ -353,6 +376,7 @@ def _reset_game():
     st.session_state["lineup_slots"] = {i: None for i in range(9)}
     st.session_state["current_slot_index"] = 0
     st.session_state["current_deal"] = None
+    st.session_state["just_drafted"] = False
 
 
 def render_game():
@@ -360,8 +384,8 @@ def render_game():
     st.header("Build Your Lineup")
     st.write(
         "Each round, you're dealt 3 random hitters (pooled from every season 1990-2024) "
-        "who play the position you still need. Pick one blind -- no ratings shown until the end. "
-        "Fill all 9 spots, then see your team's simulated 162-game record."
+        "who play the position you still need. You'll see their stats, but not their OVR -- "
+        "figure out who's best yourself. Fill all 9 spots, then see your team's simulated 162-game record."
     )
 
     if "lineup_slots" not in st.session_state:
@@ -440,7 +464,9 @@ def render_game():
         st.error("No players were dealt this round. Click Start Over to retry.")
         return
 
-    st.caption(f"Debug: dealt {len(deal)} candidates for {current_position}")
+    if st.session_state.get("just_drafted"):
+        st.balloons()
+        st.session_state["just_drafted"] = False
 
     deal_cols = st.columns(3)
     for i in range(len(deal)):
@@ -448,17 +474,24 @@ def render_game():
         with deal_cols[i]:
             try:
                 candidate_name = candidate["Name"]
-                st.markdown(f"**{candidate_name}**")
-                st.write(f"Team: {candidate.get('Team', 'N/A')}")
-                st.write(f"Season: {candidate.get('Season', 'N/A')}")
-                st.write(f"Age: {candidate.get('Age', 'N/A')}")
-                st.write(f"Position: {candidate.get('PrimaryPosition', 'N/A')}")
-                if st.button(f"Draft {candidate_name}", key=f"draft_{slot_index}_{i}"):
-                    lineup_slots[slot_index] = candidate.to_dict()
-                    st.session_state["lineup_slots"] = lineup_slots
-                    st.session_state["current_slot_index"] = slot_index + 1
-                    st.session_state["current_deal"] = None
-                    st.rerun()
+                with st.container(border=True):
+                    st.markdown(f"### {candidate_name}")
+                    st.write(f"**Team:** {candidate.get('Team', 'N/A')}")
+                    st.write(f"**Season:** {candidate.get('Season', 'N/A')}")
+                    st.write(f"**Age:** {candidate.get('Age', 'N/A')}")
+                    st.divider()
+                    st.write(f"**HR:** {candidate.get('HR', 'N/A')}")
+                    st.write(f"**BA:** {candidate.get('BA', 'N/A')}")
+                    st.write(f"**OBP:** {candidate.get('OBP', 'N/A')}")
+                    st.write(f"**SLG:** {candidate.get('SLG', 'N/A')}")
+                    st.write(f"**OPS:** {candidate.get('OPS', 'N/A')}")
+                    if st.button(f"Draft {candidate_name}", key=f"draft_{slot_index}_{i}", type="primary"):
+                        lineup_slots[slot_index] = candidate.to_dict()
+                        st.session_state["lineup_slots"] = lineup_slots
+                        st.session_state["current_slot_index"] = slot_index + 1
+                        st.session_state["current_deal"] = None
+                        st.session_state["just_drafted"] = True
+                        st.rerun()
             except Exception as error:
                 st.error(f"Could not render candidate {i}: {type(error).__name__}: {error}")
 
