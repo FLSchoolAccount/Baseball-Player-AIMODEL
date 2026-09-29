@@ -2,7 +2,7 @@
 app.py
 
 Streamlit front-end for the baseball OVR / Potential / Salary models,
-plus a "Build Your Lineup" minigame.
+plus a "Build Your Lineup" blind-draft minigame.
 
 All heavy lifting (pandas, sklearn) lives in data_logic.py -- this file
 only handles page layout, navigation, user inputs, and displaying results.
@@ -71,7 +71,7 @@ def render_home():
 
     with col5:
         st.subheader("Build Your Lineup (Minigame)")
-        st.write("Spin a random pool of hitters from a season and draft your own 9-man lineup.")
+        st.write("Blind-draft a 9-man lineup by position, then see your simulated 162-game record.")
         st.button("Play Build Your Lineup", key="open_game", on_click=go_to, args=("game",), type="primary")
 
 
@@ -269,132 +269,182 @@ def render_history():
 
 
 # ============================================================
-# MINIGAME: BUILD YOUR LINEUP
+# MINIGAME: BUILD YOUR LINEUP (blind draft by position)
 # ============================================================
 
-LINEUP_SLOTS = ["1. Leadoff", "2. Contact", "3. Best Hitter", "4. Cleanup", "5. RBI Guy",
-                 "6. Middle", "7. Middle", "8. Bottom", "9. Bottom"]
-
-POOL_SIZE = 18
+POSITION_SLOTS = ["C", "1B", "2B", "3B", "SS", "OF", "OF", "OF", "DH"]
 
 
-def _spin_new_pool(year):
-    try:
-        season_df = dl.hittingStats(year)
-        if season_df.empty:
-            return None, "No hitter data available for that year."
-
-        season_df = dl.add_hitter_formula_ovr(season_df)
-        pool_n = min(POOL_SIZE, len(season_df))
-        pool = season_df.sample(n=pool_n, random_state=random.randint(0, 999999)).reset_index(drop=True)
-        return pool, None
-    except Exception as error:
-        return None, str(error)
+def _slot_label(slot, index):
+    return f"{index + 1}. {slot}"
 
 
-def _grade_for_score(avg_ovr):
-    if avg_ovr >= 90:
+def _position_pool(position):
+    """Pool candidate hitters for a given position across ALL years (1990-2024)."""
+    if position not in st.session_state.get("_position_pool_cache", {}):
+        frames = []
+        for year in YEARS:
+            try:
+                season_df = dl.hittingStats(year)
+            except Exception:
+                continue
+            if season_df.empty or "PrimaryPosition" not in season_df.columns:
+                continue
+
+            if position == "OF":
+                mask = season_df["PrimaryPosition"].astype(str).str.upper().isin(["OF", "LF", "CF", "RF"])
+            elif position == "DH":
+                mask = season_df["PrimaryPosition"].astype(str).str.upper().isin(["DH"])
+            else:
+                mask = season_df["PrimaryPosition"].astype(str).str.upper() == position
+
+            matched = season_df.loc[mask].copy()
+            if matched.empty:
+                continue
+
+            matched["Season"] = year
+            frames.append(matched)
+
+        cache = st.session_state.setdefault("_position_pool_cache", {})
+        cache[position] = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        st.session_state["_position_pool_cache"] = cache
+
+    return st.session_state["_position_pool_cache"][position]
+
+
+def _deal_three(position):
+    pool = _position_pool(position)
+    if pool.empty or len(pool) < 3:
+        return None
+    return pool.sample(n=3, random_state=random.randint(0, 999999)).reset_index(drop=True)
+
+
+def _grade_and_wins(avg_ovr, low=72, high=95, mid=83.5, k=6):
+    if avg_ovr <= low:
+        return 0, 162
+    if avg_ovr >= high:
+        return 162, 0
+    x = (avg_ovr - low) / (high - low)
+    x0 = (mid - low) / (high - low)
+    s = 1 / (1 + np.exp(-k * (x - x0)))
+    s0 = 1 / (1 + np.exp(-k * (0 - x0)))
+    s1 = 1 / (1 + np.exp(-k * (1 - x0)))
+    s_norm = (s - s0) / (s1 - s0)
+    wins = int(round(s_norm * 162))
+    return wins, 162 - wins
+
+
+def _grade_label(wins):
+    if wins >= 100:
         return "World Series Contender", "\U0001F3C6"
-    elif avg_ovr >= 84:
+    elif wins >= 90:
         return "Playoff Team", "\u2B50"
-    elif avg_ovr >= 78:
+    elif wins >= 81:
         return "Middle of the Pack", "\u26BE"
-    elif avg_ovr >= 73:
+    elif wins >= 65:
         return "Rebuilding", "\U0001F527"
     else:
         return "Bottom Feeder", "\U0001FAAB"
+
+
+def _reset_game():
+    st.session_state["lineup_slots"] = {i: None for i in range(9)}
+    st.session_state["current_slot_index"] = 0
+    st.session_state["current_deal"] = None
 
 
 def render_game():
     back_home_button()
     st.header("Build Your Lineup")
     st.write(
-        "Spin a random pool of hitters from a season, then draft a 9-man lineup. "
-        "Your team's grade is based on the average Formula OVR of your picks."
+        "Each round, you're dealt 3 random hitters (pooled from every season 1990-2024) "
+        "who play the position you still need. Pick one blind -- no ratings shown until the end. "
+        "Fill all 9 spots, then see your team's simulated 162-game record."
     )
 
-    game_year = st.selectbox("Season to draft from", YEARS, index=len(YEARS) - 1, key="game_year")
+    if "lineup_slots" not in st.session_state:
+        _reset_game()
 
-    col_spin, col_reset = st.columns(2)
-    with col_spin:
-        spin_clicked = st.button("Spin New Player Pool", type="primary", key="spin_pool")
-    with col_reset:
-        reset_clicked = st.button("Reset Lineup", key="reset_lineup")
+    if st.button("Start Over", key="restart_game"):
+        _reset_game()
+        st.rerun()
 
-    if spin_clicked:
-        with st.spinner(f"Spinning a pool of {POOL_SIZE} hitters from {game_year}..."):
-            pool, error = _spin_new_pool(game_year)
-            if error:
-                st.error(f"Could not build a player pool: {error}")
+    lineup_slots = st.session_state["lineup_slots"]
+    slot_index = st.session_state["current_slot_index"]
+
+    st.subheader("Your Lineup So Far")
+    cols = st.columns(3)
+    for i, position in enumerate(POSITION_SLOTS):
+        with cols[i % 3]:
+            filled = lineup_slots.get(i)
+            label = _slot_label(position, i)
+            if filled is not None:
+                name = filled.get("Name")
+                team = filled.get("Team")
+                season = filled.get("Season")
+                st.success(f"{label}: {name} ({team}, {season})")
+            elif i == slot_index:
+                st.info(f"{label}: -- on the clock --")
             else:
-                st.session_state["game_pool"] = pool
-                st.session_state["game_pool_year"] = game_year
-                st.session_state["lineup"] = {slot: None for slot in LINEUP_SLOTS}
+                st.write(f"{label}: empty")
 
-    if reset_clicked and "lineup" in st.session_state:
-        st.session_state["lineup"] = {slot: None for slot in LINEUP_SLOTS}
+    if slot_index >= 9:
+        st.success("Lineup complete! Here are your final ratings:")
 
-    if "game_pool" not in st.session_state:
-        st.info("Click 'Spin New Player Pool' to deal your first set of hitters.")
+        picked_rows = []
+        for i, position in enumerate(POSITION_SLOTS):
+            row = lineup_slots[i].copy()
+            rated = dl.add_hitter_formula_ovr(pd.DataFrame([row]))
+            row["Formula_OVR"] = rated.iloc[0]["Formula_OVR"]
+            row["Slot"] = _slot_label(position, i)
+            picked_rows.append(row)
+
+        picked_df = pd.DataFrame(picked_rows)
+        display_cols = ["Slot", "Name", "Team", "Season", "Age", "HR", "BA", "OBP", "SLG", "OPS", "Formula_OVR"]
+        display_cols = [c for c in display_cols if c in picked_df.columns]
+        st.dataframe(picked_df[display_cols].rename(columns={"Formula_OVR": "OVR"}), use_container_width=True)
+
+        avg_ovr = picked_df["Formula_OVR"].mean()
+        wins, losses = _grade_and_wins(avg_ovr)
+        grade, emoji = _grade_label(wins)
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Average OVR", f"{avg_ovr:.1f}")
+        m2.metric("Simulated Record", f"{wins}-{losses}")
+        m3.metric("Team Grade", f"{emoji} {grade}")
+
+        csv_bytes = picked_df[display_cols].to_csv(index=False).encode("utf-8")
+        st.download_button("Download your lineup as CSV", csv_bytes, "my_lineup.csv", "text/csv")
         return
 
-    pool = st.session_state["game_pool"]
-    pool_year = st.session_state["game_pool_year"]
+    current_position = POSITION_SLOTS[slot_index]
+    st.subheader(f"Round {slot_index + 1}/9: Pick your {current_position}")
 
-    if "lineup" not in st.session_state:
-        st.session_state["lineup"] = {slot: None for slot in LINEUP_SLOTS}
+    if st.session_state["current_deal"] is None:
+        deal = _deal_three(current_position)
+        if deal is None:
+            st.error(f"Not enough historical {current_position} data to deal a round. Try Start Over.")
+            return
+        st.session_state["current_deal"] = deal
 
-    st.subheader(f"Available Hitters ({pool_year})")
-    display_pool = pool[["Name", "Team", "Age", "G", "AB", "HR", "BA", "OBP", "SLG", "OPS", "Formula_OVR"]].copy()
-    display_pool = display_pool.rename(columns={"Formula_OVR": "OVR"})
-    st.dataframe(display_pool, use_container_width=True, height=300)
+    deal = st.session_state["current_deal"]
 
-    name_to_row = {row["Name"]: row for _, row in pool.iterrows()}
-    player_name_options = ["-- empty --"] + sorted(name_to_row.keys())
-
-    st.subheader("Your Lineup")
-    lineup = st.session_state["lineup"]
-
-    used_names = {v for v in lineup.values() if v is not None}
-
-    cols = st.columns(3)
-    for i, slot in enumerate(LINEUP_SLOTS):
-        with cols[i % 3]:
-            current = lineup.get(slot)
-            default_index = player_name_options.index(current) if current in player_name_options else 0
-            chosen = st.selectbox(slot, player_name_options, index=default_index, key=f"slot_{slot}")
-            lineup[slot] = None if chosen == "-- empty --" else chosen
-
-    st.session_state["lineup"] = lineup
-
-    filled = [v for v in lineup.values() if v is not None]
-    duplicate_names = {name for name in filled if filled.count(name) > 1}
-
-    if duplicate_names:
-        st.warning(f"You picked the same player in more than one slot: {', '.join(duplicate_names)}. Pick different players for each spot.")
-    elif len(filled) < 9:
-        st.info(f"{len(filled)}/9 slots filled. Fill every slot to see your team grade.")
-    else:
-        picked_rows = [name_to_row[name] for name in filled]
-        picked_df = pd.DataFrame(picked_rows)[["Name", "Team", "Age", "HR", "BA", "OBP", "SLG", "OPS", "Formula_OVR"]]
-        picked_df = picked_df.rename(columns={"Formula_OVR": "OVR"})
-
-        avg_ovr = picked_df["OVR"].mean()
-        avg_ops = picked_df["OPS"].mean()
-        total_hr = picked_df["HR"].sum()
-        grade, emoji = _grade_for_score(avg_ovr)
-
-        st.success("Lineup complete!")
-        st.dataframe(picked_df, use_container_width=True)
-
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Average OVR", f"{avg_ovr:.1f}")
-        m2.metric("Average OPS", f"{avg_ops:.3f}")
-        m3.metric("Total HR", f"{int(total_hr)}")
-        m4.metric("Team Grade", f"{emoji} {grade}")
-
-        csv_bytes = picked_df.to_csv(index=False).encode("utf-8")
-        st.download_button("Download your lineup as CSV", csv_bytes, f"my_lineup_{pool_year}.csv", "text/csv")
+    deal_cols = st.columns(3)
+    for i in range(len(deal)):
+        candidate = deal.iloc[i]
+        with deal_cols[i]:
+            candidate_name = candidate["Name"]
+            st.markdown(f"**{candidate_name}**")
+            st.write(f"Team: {candidate['Team']}")
+            st.write(f"Season: {candidate['Season']}")
+            st.write(f"Age: {candidate['Age']}")
+            st.write(f"Position: {candidate['PrimaryPosition']}")
+            if st.button(f"Draft {candidate_name}", key=f"draft_{slot_index}_{i}"):
+                lineup_slots[slot_index] = candidate.to_dict()
+                st.session_state["lineup_slots"] = lineup_slots
+                st.session_state["current_slot_index"] = slot_index + 1
+                st.session_state["current_deal"] = None
+                st.rerun()
 
 
 # ============================================================
