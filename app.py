@@ -302,39 +302,47 @@ def _slot_label(slot, index):
     return f"{index + 1}. {slot}"
 
 
-def _position_pool(position):
-    """Pool candidate hitters for a given position across ALL years (1990-2024)."""
-    if position not in st.session_state.get("_position_pool_cache", {}):
-        frames = []
-        for year in YEARS:
-            try:
-                season_df = dl.hittingStats(year)
-            except Exception:
-                continue
-            if season_df.empty or "PrimaryPosition" not in season_df.columns:
-                continue
+@st.cache_data(show_spinner=False)
+def _build_all_position_pools():
+    """
+    Scan every season ONCE and split hitters into position buckets.
+    Cached across reruns/sessions via st.cache_data since the underlying
+    CSVs never change -- this replaces doing a fresh 35-year scan per
+    position (7 scans/game) with a single combined scan (1 scan total).
+    """
+    buckets = {"C": [], "1B": [], "2B": [], "3B": [], "SS": [], "OF": [], "DH": []}
 
-            pos_series = season_df["PrimaryPosition"].astype(str).str.upper().str.strip()
+    for year in YEARS:
+        try:
+            season_df = dl.hittingStats(year)
+        except Exception:
+            continue
+        if season_df.empty or "PrimaryPosition" not in season_df.columns:
+            continue
 
-            if position == "OF":
+        season_df = season_df.copy()
+        season_df["Season"] = year
+        pos_series = season_df["PrimaryPosition"].astype(str).str.upper().str.strip()
+
+        for bucket_name in buckets:
+            if bucket_name == "OF":
                 mask = pos_series.isin(["OF", "LF", "CF", "RF"])
-            elif position == "DH":
-                mask = pos_series.isin(["DH"])
             else:
-                mask = pos_series == position
+                mask = pos_series == bucket_name
 
-            matched = season_df.loc[mask].copy()
-            if matched.empty:
-                continue
+            matched = season_df.loc[mask]
+            if not matched.empty:
+                buckets[bucket_name].append(matched)
 
-            matched["Season"] = year
-            frames.append(matched)
+    return {
+        name: (pd.concat(frames, ignore_index=True) if frames else pd.DataFrame())
+        for name, frames in buckets.items()
+    }
 
-        cache = st.session_state.setdefault("_position_pool_cache", {})
-        cache[position] = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-        st.session_state["_position_pool_cache"] = cache
 
-    return st.session_state["_position_pool_cache"][position]
+def _position_pool(position):
+    all_pools = _build_all_position_pools()
+    return all_pools.get(position, pd.DataFrame())
 
 
 def _deal_three(position):
