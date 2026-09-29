@@ -58,7 +58,7 @@ def render_home():
                 "baseball statistics and machine learning. I wanted to see if I could take decades "
                 "of real MLB data and use it to predict player ratings, project future performance, "
                 "and estimate salaries -- the kind of thing you'd see in a sports video game, but "
-                "built from scratch with real historical data and my own rating formulas."
+                "built from scratch with real historical data and my own rating formulas. HI YF!"
             )
             st.write(
                 "I built the models using Python, pandas, and scikit-learn (random forest "
